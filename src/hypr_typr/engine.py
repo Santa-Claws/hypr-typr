@@ -1,13 +1,16 @@
 from __future__ import annotations
 import asyncio
+import os
+import signal
 import subprocess
 import sys
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Callable
 
 from .config import Config, load as load_config
 from .humanizer import Humanizer
+
+PID_FILE = Path("/tmp/hypr-typr.pid")
 
 KEYSYM_MAP = {
     "\n": "Return",
@@ -16,15 +19,23 @@ KEYSYM_MAP = {
     "\x08": "BackSpace",
 }
 
+_DEVNULL = subprocess.DEVNULL
+
 
 def _wtype_char(char: str) -> None:
     keysym = KEYSYM_MAP.get(char)
     if keysym:
-        subprocess.run(["wtype", "-k", keysym], check=False)
+        subprocess.run(
+            ["wtype", "-k", keysym],
+            check=False, stdout=_DEVNULL, stderr=_DEVNULL,
+        )
     else:
         try:
             char.encode("utf-8")
-            subprocess.run(["wtype", "--", char], check=False)
+            subprocess.run(
+                ["wtype", "--", char],
+                check=False, stdout=_DEVNULL, stderr=_DEVNULL,
+            )
         except Exception:
             pass
 
@@ -61,4 +72,27 @@ def run_type_clipboard() -> None:
     text = get_clipboard()
     if not text:
         sys.exit(0)
-    asyncio.run(type_text(text, cfg))
+
+    PID_FILE.write_text(str(os.getpid()))
+    try:
+        # brief pause so the keybind key-release event clears before typing starts
+        asyncio.run(_type_with_delay(text, cfg))
+    finally:
+        PID_FILE.unlink(missing_ok=True)
+
+
+async def _type_with_delay(text: str, cfg: Config) -> None:
+    await asyncio.sleep(0.15)
+    await type_text(text, cfg)
+
+
+def run_stop() -> None:
+    if not PID_FILE.exists():
+        sys.exit(0)
+    try:
+        pid = int(PID_FILE.read_text().strip())
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, ValueError):
+        pass
+    finally:
+        PID_FILE.unlink(missing_ok=True)

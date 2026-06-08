@@ -1,0 +1,145 @@
+hypr-typr — Design & Process Notes
+=====================================
+
+GOAL
+----
+A utility that reads the clipboard and injects its contents as individual
+keystrokes via Hyprland/Wayland key injection. Works in all apps, including
+those that block clipboard paste. Has configurable speed and an optional
+humanizer that makes the typing look organic.
+
+
+REQUIREMENTS BREAKDOWN
+-----------------------
+1. Key injection that works in all Wayland/Hyprland apps
+2. Reads from clipboard (not stdin) — triggered by a keybind, no focused input
+3. Configurable speed (WPM-based)
+4. Humanizer: per-keystroke random variation, word pauses, occasional burst runs
+5. TUI settings UI — lightweight, keyboard-driven, no Electron
+6. Stop keybind — cancel an in-progress typing session
+7. Installable on Arch Linux with Hyprland
+
+
+TOOL SELECTION
+--------------
+Key injection options on Wayland:
+  - ydotool: works but requires a background daemon (ydotoold), adds complexity
+  - xdotool: X11 only, won't work natively under Hyprland without XWayland
+  - wtype: native Wayland, no daemon, simple CLI. Chosen.
+
+Clipboard reading:
+  - wl-paste (from wl-clipboard): standard Wayland clipboard tool. Already
+    installed on most Hyprland setups. Used as a subprocess call.
+
+Language: Python 3
+  - Fast to prototype, good async support (asyncio for delay control), excellent
+    TUI libraries available.
+
+TUI: Textual
+  - Modern Python TUI framework with sliders, switches, progress bars.
+  - Renders well in any terminal.
+  - Ships as a pip package, isolated in the pipx venv.
+
+Config: JSON at ~/.config/hypr-typr/config.json
+  - Human-readable, directly editable, no extra dependencies.
+  - Backed by a Python dataclass for type safety.
+
+Install: pipx
+  - Arch Linux uses PEP 668 (externally-managed-environment), so plain
+    pip install --user is blocked.
+  - pipx creates an isolated venv per app. Correct tool for user-facing
+    Python CLI tools on Arch.
+
+
+ARCHITECTURE
+------------
+src/hypr_typr/
+  config.py     Dataclass config + load/save to ~/.config/hypr-typr/config.json
+  humanizer.py  Computes per-keystroke delay with gaussian variation + word pauses
+  engine.py     Reads clipboard, iterates chars, calls wtype per character
+  tui.py        Textual app for interactive settings + live typing
+  __main__.py   CLI entry: type | stop | settings
+
+The typing loop in engine.py is async (asyncio). Each character:
+  1. Compute delay via Humanizer.next_delay()
+  2. asyncio.sleep(delay)
+  3. subprocess call to wtype (or wtype -k for special chars)
+
+A PID file (/tmp/hypr-typr.pid) is written on start and deleted on finish.
+The stop command sends SIGTERM to that PID.
+
+
+HUMANIZER DESIGN
+----------------
+Base delay = 60 / (WPM * 5) seconds per character
+  (assumes average word is 5 characters)
+
+When humanizer is on:
+  - Delay is drawn from gaussian(base, base * variation_pct/100)
+  - Clamped to [base*0.4, base*2.0] so it never gets absurd
+  - At word boundaries (space/newline), a random extra pause may be added
+  - "Burst" mode: occasionally zero-ish delay for 2-4 chars, simulating
+    fast runs of familiar letter sequences
+
+Default config has humanizer OFF. When enabled, defaults are intentionally
+subtle (12% variation, 8% word pause chance, 20-60ms pauses). The original
+prototype used much larger values (30% variation, 80-300ms pauses) which were
+too obvious and looked fake in the other direction.
+
+
+KEYBIND DESIGN
+--------------
+Hyprland keybinds use the format:
+  bind = MOD, KEY, exec, command
+
+Two binds:
+  - SUPER+Y: start typing ("Y" for "tYpe", free across all Hyprland defaults
+    and Firefox defaults — Firefox doesn't use Super-key bindings at all)
+  - SUPER+ALT+Y: stop typing
+
+The exec command redirects to /dev/null and wraps in bash -c to prevent any
+terminal output from surfacing as a Hyprland window artifact.
+
+A 150ms initial delay is added before typing begins so the keybind key-release
+event fully clears before wtype starts injecting keystrokes.
+
+
+SPECIAL CHARACTER HANDLING
+--------------------------
+wtype can type arbitrary Unicode with: wtype -- <char>
+Special characters that need keysym form:
+  \n  -> wtype -k Return
+  \t  -> wtype -k Tab
+  \x1b -> wtype -k Escape
+  \x08 -> wtype -k BackSpace
+
+Unmappable characters (rare control codes, etc.) are silently skipped.
+
+
+KNOWN LIMITATIONS
+-----------------
+- wtype cannot inject keystrokes into apps running as a different user
+  (e.g., sudo'd terminals). This is a Wayland security boundary.
+- Very long clipboard contents will take a while. The stop keybind
+  (SUPER+ALT+Y) handles this.
+- Emoji and multi-codepoint sequences work via wtype's Unicode support,
+  but rendering depends on the target app's font/input support.
+
+
+ITERATION HISTORY
+-----------------
+v1 (initial):
+  - Basic implementation, humanizer defaults too aggressive
+  - Used pip --user install (blocked on Arch due to PEP 668)
+  - pyproject.toml used wrong build backend (setuptools.backends.legacy)
+  - No stop mechanism
+
+v2 (current):
+  - Fixed build backend to setuptools.build_meta
+  - Switched to pipx for install
+  - Humanizer defaults toned way down, off by default
+  - Added stop command + PID file
+  - Added SUPER+ALT+Y stop keybind
+  - Added 150ms startup delay to clear keybind release before typing
+  - Suppressed subprocess stdout/stderr to prevent window artifacts
+  - Clamped humanizer delay range to prevent extreme outliers
