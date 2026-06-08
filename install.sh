@@ -20,7 +20,11 @@ if ! command -v wl-paste &>/dev/null; then
 fi
 
 echo "==> Installing hypr-typr..."
-pip install --user -e . --quiet
+if command -v pipx &>/dev/null; then
+    pipx install . --quiet --force
+else
+    pip install --user -e . --break-system-packages --quiet
+fi
 
 echo "==> Done!"
 echo ""
