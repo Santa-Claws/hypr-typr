@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "hypr-typr"
+version = "1.0.0"
+description = "Clipboard-to-keystroke typer for Hyprland with humanizer"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=0.60.0",
+]
+
+[project.scripts]
+hypr-typr = "hypr_typr.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
